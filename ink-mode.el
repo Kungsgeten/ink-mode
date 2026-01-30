@@ -45,6 +45,7 @@
 (require 'easymenu)
 (require 'flymake)
 (require 'cl-lib)
+(require 'rx)
 
 (defgroup ink nil
   "Major mode for writing interactive fiction in Ink."
@@ -865,7 +866,7 @@ errors, warnings and infos appearing in LINE, and discards the
 rest."
   (let ((result ""))
     (if ink-comint-do-filter
-        (cond ((string-match-p "^\\(ERROR:\\|WARNING:\\|TODO\\)" line)
+        (cond ((string-match-p "^\\(ERROR:\\|WARNING:\\|TODO:\\)" line)
                (setq result (concat line "\n")))
               ((string-match-p "\\?>" line)
                (setq result (concat (substring line 3) "\n"))
@@ -885,100 +886,124 @@ directly at a knot... OUTPUT is the output to be filtered."
   output)
 
 
-;;; Error checking with flymake
+;;; Error checking with Flymake
+
+(defun ink--flymake-type-from-tag (tag)
+  "Map compiler error TAG to Flymake warning types."
+  (pcase (upcase tag)
+    ("ERROR" :error)
+    ("WARNING" :warning)
+    ("TODO" :note)
+    (_ (error "Uknown error tag"))))
+
+(defun ink--flymake-parse-line (line)
+  "Parse a single inklecate output LINE.
+Return a plist (:file :line :type :msg) or nil."
+  (when (string-match
+         ;; Error tag here should match the ones in
+         ;; `ink--flymake-type-from-tag'.
+         (rx bol
+             ;; Tag
+             (group (or "ERROR" "WARNING" "TODO")) ":" (* space)
+             ;; File
+             (? "'") (group (+ (not (any "'")))) (? "'")
+             ;; Line
+             (* space) "line" (+ space) (group (+ digit)) ":" (* space)
+             ;; End of line
+             (group (* any)) eol)
+         line)
+    (list :file (match-string 2 line)
+          :line (string-to-number (match-string 3 line))
+          :type (ink--flymake-type-from-tag (match-string 1 line))
+          :msg  (string-trim (match-string 4 line)))))
+
+(defun ink--flymake-parse-output (output)
+  "Parse inklecate OUTPUT into a list of plists."
+  (delq nil (mapcar #'ink--flymake-parse-line (split-string output "\n" t))))
+
+(defun ink--flymake-same-file-p (a b default-dir)
+  "Non-nil if files A and B refer to the same file (best-effort).
+A or B may be relative; DEFAULT-DIR is used to resolve."
+  (let ((aa (expand-file-name a default-dir))
+        (bb (expand-file-name b default-dir)))
+    (or (file-equal-p aa bb)
+        ;; Some inklecate outputs only basenames; keep this as a fallback.
+        (string-equal (file-name-nondirectory aa)
+                      (file-name-nondirectory bb)))))
+
+(defun ink--flymake-items-to-diagnostics (items source-buf temp-file default-dir)
+  "Convert parsed ITEMS into Flymake diagnostics for SOURCE-BUF.
+TEMP-FILE - temporary file used to run the checks.  DEFAULT-DIR -
+directory used to run the check."
+  (let (diags)
+    (dolist (it items)
+      (let* ((f (plist-get it :file))
+             (ln (or (plist-get it :line) 1))
+             (ty (or (plist-get it :type) :warning))
+             (msg (or (plist-get it :msg) "")))
+        (if (ink--flymake-same-file-p f temp-file default-dir)
+            ;; Local file (either the temp file name, or the real file name)
+            (pcase-let ((`(,beg . ,end) (flymake-diag-region source-buf ln)))
+              (push (flymake-make-diagnostic source-buf beg end ty msg) diags)))))
+    diags))
 
 (defvar-local ink--flymake-proc nil)
 
-(defun ink-flymake (report-fn &rest _args)
-  "Ink backend for Flymake.
-Creates temporary files and passes their names as arguments to
-`ink-inklecate-path' (which see).  The output of this command is analyzed
-for error and warning messages.
-
-REPORT-FN - Flymake reporting funciton."
+;;; TODO: Handle errors in other files.
+(defun ink-flymake-inklecate (report-fn &rest _args)
+  "Flymake backend for Ink using inklecate.
+REPORT-FN - Flymake diagnostics reporting function."
+  ;; Check if the compiler is available.
   (unless (executable-find ink-inklecate-path)
-    (error "Cannot find a suitable checker"))
-  ;; If a live process launched in an earlier check was found, that
-  ;; process is killed.  When that process's sentinel eventually runs,
-  ;; it will notice its obsoletion, since it have since reset
-  ;; `ink-flymake-proc' to a different value
-  ;;
+    (error "Connect find %s" ink-inklecate-path))
+
+  ;; Process stuck?
   (when (process-live-p ink--flymake-proc)
     (kill-process ink--flymake-proc))
-  ;; From ‘flymake-proc-init-create-temp-buffer-copy’.
-  ;;
+
   (let* ((source (current-buffer))
-         (temp-file   (flymake-proc-init-create-temp-buffer-copy
-                       'flymake-proc-create-temp-inplace))
-         (local-file  (file-relative-name
-                       temp-file
-                       (file-name-directory buffer-file-name)))
-         (json-file   (concat local-file ".json")))
-    ;; Save the current buffer, the narrowing restriction, remove any
-    ;; narrowing restriction.
-    ;;
+         (source-file (buffer-file-name source))
+         (default-dir (file-name-directory source-file))
+
+         ;; Tmp source file in same dir so INCLUDE relative paths
+         ;; work
+         (temp-ink (make-temp-file
+                    (expand-file-name
+                     (concat (file-name-base source-file) "-flymake-")
+                     default-dir)
+                    nil ".ink"))
+
+         ;; Dump stdout somewhere harmless.
+         (cmd (append (list ink-inklecate-path
+                            "-o" (or null-device (make-temp-name "NUL")))
+                      (list temp-ink))))
+
+    ;; Write to a temporary file.
     (save-restriction
       (widen)
-      ;; Reset the `ink--flymake-proc' process to a new process
-      ;; calling the ink tool.
-      ;;
-      (setq ink--flymake-proc
-            (make-process
-             :name "ink-flymake" :noquery t :connection-type 'pipe
-             ;; Make output go to a temporary buffer.
-             ;;
-             :buffer (generate-new-buffer " *ink-flymake*")
-             :command (list ink-inklecate-path "-o" json-file local-file)
-             :sentinel
-             (lambda (proc _event)
-               ;; Check that the process has indeed exited, as it might
-               ;; be simply suspended.
-               ;;
-               (when (eq 'exit (process-status proc))
-                 (unwind-protect
-                     ;; Only proceed if `proc' is the same as
-                     ;; `ink--flymake-proc', which indicates that
-                     ;; `proc' is not an obsolete process.
-                     ;;
-                     (if (with-current-buffer source (eq proc ink--flymake-proc))
-                         (with-current-buffer (process-buffer proc)
-                           (goto-char (point-min))
-                           ;; Parse the output buffer for diagnostic's
-                           ;; messages and locations, collect them in a list
-                           ;; of objects, and call `report-fn'.
-                           ;;
-                           (cl-loop
-                            while (search-forward-regexp
-                                   "^\\(.*?\\): '.*?' line \\([0-9]+\\): \\(.*\\)$"
-                                   nil t)
-                            for msg = (match-string 3)
-                            for (beg . end) = (flymake-diag-region
-                                               source
-                                               (string-to-number (match-string 2)))
-                            for type = (cond
-                                        ((string-match "ERROR" (match-string 1)) :error)
-                                        ((string-match "WARNING" (match-string 1)) :warning)
-                                        ((string-match "TODO" (match-string 1)) :note)
-                                        (t :warning))
-                            collect (flymake-make-diagnostic source
-                                                             beg
-                                                             end
-                                                             type
-                                                             msg)
-                            into diags
-                            finally (funcall report-fn diags)))
-                       ;; Cleanup the temporary buffer used to hold the
-                       ;; check's output.
-                       ;;
-                       (kill-buffer (process-buffer proc)))
-                   ;; Delete temporary files
-                   (flymake-proc--safe-delete-file local-file)
-                   (flymake-proc--safe-delete-file json-file))))))
-      ;; Send the buffer contents to the process's stdin, followed by
-      ;; an EOF.
-      ;;
-      (process-send-region ink--flymake-proc (point-min) (point-max))
-      (process-send-eof ink--flymake-proc))))
+      (write-region (point-min) (point-max) temp-ink nil 'silent))
+
+    (setq ink--flymake-proc
+          (make-process
+           :name "ink-flymake"
+           :noquery t
+           :buffer (generate-new-buffer " *ink-flymake*")
+           :command cmd
+           :sentinel
+           (lambda (proc _event)
+             (when (memq (process-status proc) '(exit signal))
+               (unwind-protect
+                   (when (buffer-live-p source)
+                     (with-current-buffer source
+                       (when (eq proc ink--flymake-proc)
+                         (let* ((output (with-current-buffer (process-buffer proc)
+                                          (buffer-string)))
+                                (items (ink--flymake-parse-output output))
+                                (diags (ink--flymake-items-to-diagnostics
+                                        items source temp-ink default-dir)))
+                           (funcall report-fn diags)))))
+                 (ignore-errors (delete-file temp-ink))
+                 (kill-buffer (process-buffer proc)))))))))
 
 
 ;;; Outline
@@ -1223,7 +1248,7 @@ Completion is only provided for diverts."
   (add-to-invisibility-spec '(outline . t))
 
   ;; Flymake
-  (add-hook 'flymake-diagnostic-functions 'ink-flymake nil t)
+  (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t)
 
   ;; Snippets
   (ink-load-snippets))
