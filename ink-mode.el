@@ -145,6 +145,27 @@ Group 2 matches a link text")
   "Regexp identifying Ink comments.")
 
 
+;;; Compiler lookup
+
+(defcustom ink-inklecate-command "inklecate"
+  "Command used to invoke inklecate.
+Absolute path or a program used looked up in variable `exec-path'."
+  :group 'ink
+  :type '(choice (const :tag "inklecate (looked up in PATH)" "inklecate")
+                 (string :tag "Path or command name")))
+
+(defun ink--inklecate-executable ()
+  "Return absolute path to inklecate or nil.
+Resolve the `ink-inklecate-command'.  Should be used whenever inklecate
+is invoked."
+  (when-let* ((cmd ink-inklecate-command))
+    (or
+     ;; Resolve absolute paths.
+     (and (file-name-absolute-p cmd) (file-executable-p cmd) cmd)
+     ;; Or check PATH.
+     (executable-find cmd))))
+
+
 ;;; Link following
 
 (defun ink-follow-link-at-point ()
@@ -774,11 +795,6 @@ indent.  INDENTATION is the current sum."
 Derives from `comint-mode', adds a few ink bindings."
   (add-hook 'comint-preoutput-filter-functions #'ink-comint-filter-output nil t))
 
-(defcustom ink-inklecate-path (executable-find "inklecate")
-  "The path to the Inklecate executable."
-  :group 'ink
-  :type '(file))
-
 (defvar-local ink-comint-do-filter nil)
 
 (defun ink-play-knot ()
@@ -824,13 +840,13 @@ output filter."
                ;; has finished, so kick it off again
                in-ink-play-buffer)
               (progn
-                (comint-exec "*Ink*" "Ink" ink-inklecate-path
+                (comint-exec "*Ink*" "Ink" (ink--inklecate-executable)
                              nil `("-p" ,file-name))
                 "*Ink*")
             ;; no *Ink* buffer yet, need to create it
             (progn
               (let ((new-buffer
-                     (make-comint "Ink" ink-inklecate-path nil
+                     (make-comint "Ink" (ink--inklecate-executable) nil
                                   "-p" (buffer-file-name))))
                 (set-buffer new-buffer)
                 (ink-play-mode)
@@ -894,6 +910,7 @@ directly at a knot... OUTPUT is the output to be filtered."
     ("ERROR" :error)
     ("WARNING" :warning)
     ("TODO" :note)
+    ;; NOTE: shouldn't happen as we use a regexp to catch all options
     (_ (error "Uknown error tag"))))
 
 (defun ink--flymake-parse-line (line)
@@ -938,24 +955,23 @@ directory used to run the check."
   (let (diags)
     (dolist (it items)
       (let* ((f (plist-get it :file))
-             (ln (or (plist-get it :line) 1))
-             (ty (or (plist-get it :type) :warning))
+             (line (or (plist-get it :line) 1))
+             (type (or (plist-get it :type) :warning))
              (msg (or (plist-get it :msg) "")))
-        (if (ink--flymake-same-file-p f temp-file default-dir)
-            ;; Local file (either the temp file name, or the real file name)
-            (pcase-let ((`(,beg . ,end) (flymake-diag-region source-buf ln)))
-              (push (flymake-make-diagnostic source-buf beg end ty msg) diags)))))
+        (when (ink--flymake-same-file-p f temp-file default-dir)
+          (pcase-let ((`(,beg . ,end) (flymake-diag-region source-buf line)))
+            (push (flymake-make-diagnostic source-buf beg end type msg) diags)))))
     diags))
 
 (defvar-local ink--flymake-proc nil)
 
-;;; TODO: Handle errors in other files.
+;;; TODO: Also report errors in INCLUDE'd files.
 (defun ink-flymake-inklecate (report-fn &rest _args)
   "Flymake backend for Ink using inklecate.
 REPORT-FN - Flymake diagnostics reporting function."
-  ;; Check if the compiler is available.
-  (unless (executable-find ink-inklecate-path)
-    (error "Connect find %s" ink-inklecate-path))
+  ;; Check if the compiler is available, disable otherwise.
+  (unless (ink--inklecate-executable)
+    (error "Unable to find inklescape"))
 
   ;; Process stuck?
   (when (process-live-p ink--flymake-proc)
@@ -966,15 +982,15 @@ REPORT-FN - Flymake diagnostics reporting function."
          (default-dir (file-name-directory source-file))
 
          ;; Tmp source file in same dir so INCLUDE relative paths
-         ;; work
+         ;; work.
          (temp-ink (make-temp-file
                     (expand-file-name
                      (concat (file-name-base source-file) "-flymake-")
                      default-dir)
                     nil ".ink"))
 
-         ;; Dump stdout somewhere harmless.
-         (cmd (append (list ink-inklecate-path
+         ;; Dump stdout somewhere.
+         (cmd (append (list (ink--inklecate-executable)
                             "-o" (or null-device (make-temp-name "NUL")))
                       (list temp-ink))))
 
@@ -983,6 +999,7 @@ REPORT-FN - Flymake diagnostics reporting function."
       (widen)
       (write-region (point-min) (point-max) temp-ink nil 'silent))
 
+    ;; Launch the process.
     (setq ink--flymake-proc
           (make-process
            :name "ink-flymake"
@@ -993,15 +1010,18 @@ REPORT-FN - Flymake diagnostics reporting function."
            (lambda (proc _event)
              (when (memq (process-status proc) '(exit signal))
                (unwind-protect
-                   (when (buffer-live-p source)
-                     (with-current-buffer source
-                       (when (eq proc ink--flymake-proc)
-                         (let* ((output (with-current-buffer (process-buffer proc)
-                                          (buffer-string)))
-                                (items (ink--flymake-parse-output output))
-                                (diags (ink--flymake-items-to-diagnostics
-                                        items source temp-ink default-dir)))
-                           (funcall report-fn diags)))))
+                   (when (and (buffer-live-p source)
+                              (eq proc ink--flymake-proc))
+                     ;; buffer string -> parse -> diags -> report.
+                     (funcall
+                      report-fn
+                      (thread-first
+                        (with-current-buffer (process-buffer proc)
+                          (buffer-string))
+                        (ink--flymake-parse-output)
+                        (ink--flymake-items-to-diagnostics
+                         source temp-ink default-dir))))
+                 ;; Cleanup on exit/failure.
                  (ignore-errors (delete-file temp-ink))
                  (kill-buffer (process-buffer proc)))))))))
 
