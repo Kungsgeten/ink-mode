@@ -9,7 +9,7 @@
 ;; URL: https://github.com/Kungsgeten/ink-mode
 ;; Version: 0.3.2
 ;; Keywords: languages, wp, hypermedia
-;; Package-Requires: ((emacs "26.1"))
+;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -38,14 +38,13 @@
 
 ;;; Code:
 
-(require 'rx)
 (require 'comint)
 (require 'thingatpt)
 (require 'outline)
 (require 'subr-x)
 (require 'easymenu)
 (require 'flymake)
-(require 'seq)
+(require 'cl-lib)
 
 (defgroup ink nil
   "Major mode for writing interactive fiction in Ink."
@@ -59,28 +58,21 @@
   :group 'ink
   :group 'faces)
 
-(defvar ink-mode-hook nil)
+(defvar-keymap ink-mode-map
+  :doc "Keymap for `ink-mode'."
+  "C-c C-c" #'ink-play
+  "C-c C-p" #'ink-play-knot
+  "C-c C-o" #'ink-follow-link-at-point
+  "C-c C-h" #'ink-display-manual
+  ;; Folding/indent dispatch
+  "TAB"     #'ink-cycle
+  "<backtab>" #'ink-cycle-global)
 
-(defvar ink-mode-map
-  (let ((map (make-keymap)))
-    (define-key map (kbd "C-c C-c") 'ink-play)
-    (define-key map (kbd "C-c C-p") 'ink-play-knot)
-    (define-key map (kbd "C-c C-o") 'ink-follow-link-at-point)
-    (define-key map (kbd "C-c C-h") 'ink-display-manual)
-    ;; Visibility cycling
-    (define-key map (kbd "TAB") 'ink-cycle)
-    (define-key map (kbd "<S-iso-lefttab>") 'ink-shifttab)
-    (define-key map (kbd "<S-tab>")  'ink-shifttab)
-    (define-key map (kbd "<backtab>") 'ink-shifttab)
-    map)
-  "Keymap for ink major mode.")
-
-(defvar ink-mode-mouse-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [follow-link] 'mouse-face)
-    (define-key map [mouse-2] #'ink-follow-link-at-point)
-    map)
-  "Keymap for following links with mouse.")
+(defvar-keymap ink-mode-mouse-map
+  :doc "Mouse map for clickable ink links."
+  ;; This makes it look clickable
+  "<follow-link>" 'mouse-face
+  "<mouse-2>" #'ink-follow-link-at-point)
 
 (easy-menu-define ink-mode-menu ink-mode-map
   "Menu for `ink-mode'."
@@ -292,7 +284,7 @@ to search."
                        (message "Jumping to %s" title)
                        (goto-char position)
                        (ignore-errors (outline-show-subtree)))
-          (user-error "Link `%s' not found. Is it in another file?" title))))))
+          (user-error "Link `%s' not found.  Is it in another file?" title))))))
 
 (defun ink-follow-file-link ()
   "Find file matching the link at point."
@@ -452,23 +444,23 @@ keyword."
   "If non-nil, force using spaces between choices and gathers.
 You'd get something like:
 
--   I looked at Monsieur Fogg
-    *   ... and I could contain myself no longer.
-        'What is the purpose of our journey, Monsieur?'
-        'A wager,' he replied.
-        * *   'A wager!'[] I returned.
-              He nodded.
-            * * *   'But surely that is foolishness!'
+  -   I looked at Monsieur Fogg
+      *   ... and I could contain myself no longer.
+          \\='What is the purpose of our journey, Monsieur?\\='
+          \\='A wager,\\=' he replied.
+          * *   \\='A wager!\\='[] I returned.
+                He nodded.
+              * * *   \\='But surely that is foolishness!\\='
 
 Otherwise, use the setting of `indent-tabs-mode', which may give:
 
--   I looked at Monsieur Fogg
-    *   ... and I could contain myself no longer.
-        'What is the purpose of our journey, Monsieur?'
-        'A wager,' he replied.
-        *   *   'A wager!'[] I returned.
-                He nodded.
-            *   *   *   'But surely that is foolishness!'"
+  -   I looked at Monsieur Fogg
+      *   ... and I could contain myself no longer.
+          \\='What is the purpose of our journey, Monsieur?\\='
+          \\='A wager,\\=' he replied.
+          *   *   \\='A wager!\\='[] I returned.
+                  He nodded.
+              *   *   *   \\='But surely that is foolishness!\\='"
   :group 'ink
   :type 'boolean)
 
@@ -638,8 +630,8 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
          ;; Conditions inside brackets - ...:
          ((and (looking-at "^\\s-*-.*:\\s-*")
                (or
-                (seq-contains indentation-list 'bracket)
-                (seq-contains indentation-list 'bracket-cond)))
+                (memq 'bracket indentation-list)
+                (memq 'bracket-cond indentation-list)))
           ;; Pop until previous bracket
           (while (not (or (eq 'bracket (nth 0 indentation-list))
                           (eq 'bracket-cond (nth 0 indentation-list))))
@@ -743,9 +735,9 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
 
 (defun ink-calculate-choice-indentation (element indentation-list indentation)
   "Get the number of columns to indent choices and gathers.
-This depends on previous indentation, and settings. ELEMENT is
+This depends on previous indentation, and settings.  ELEMENT is
 the current element in the INDENTATION-LIST for the lign to
-indent. INDENTATION is the current sum."
+indent.  INDENTATION is the current sum."
   (let (value)
     (if ink-indent-choices-with-spaces
         (if (eq element (nth 0 indentation-list))
@@ -768,23 +760,18 @@ indent. INDENTATION is the current sum."
 
 ;;; Ink-play
 
-(defvar ink-play-mode-hook nil)
-
-(defvar ink-play-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-h") 'ink-display-manual)
-    (define-key map (kbd "C-c C-c") 'ink-play)
-    (define-key map (kbd "C-c C-p") 'ink-play-knot)
-    map)
-  "Keymap for ink-play mode.
-
+(defvar-keymap ink-play-mode-map
+  :doc "Keymap for `ink-play' mode.
 `ink-play' and `ink-play-knot' in this mode will re-run the last
-ink-play and ink-play-knot commands in the same buffer.")
+`ink-play' and `ink-play-knot' commands in the same buffer."
+  "C-c C-h" #'ink-display-manual
+  "C-c C-c" #'ink-play
+  "C-c C-p" #'ink-play-knot)
 
 (define-derived-mode ink-play-mode comint-mode "Ink-Play"
   "Major mode for `ink-play'.
-
-Derives from comint-mode, adds a few ink bindings.")
+Derives from `comint-mode', adds a few ink bindings."
+  (add-hook 'comint-preoutput-filter-functions #'ink-comint-filter-output nil t))
 
 (defcustom ink-inklecate-path (executable-find "inklecate")
   "The path to the Inklecate executable."
@@ -798,14 +785,15 @@ Derives from comint-mode, adds a few ink bindings.")
   (interactive)
   (ink-play t))
 
-;; last file-name and knot to support replaying
-(setq ink-last-played-file-name nil)
-(setq ink-last-played-knot nil)
+(defvar ink-last-played-file-name nil
+  "Last known file name that was run.")
+(defvar ink-last-played-knot nil
+  "Last known knot name that was run .")
 
 (defun ink-play (&optional go-to-knot)
   "Play the current ink buffer.
 If the GO-TO-KNOT optional argument is non-nil, start at the knot
-or stitch at point. In that case we issue \"-> knot.stitch\" to
+or stitch at point.  In that case we issue \"-> knot.stitch\" to
 the process, and suppress the beginning output using the comint
 output filter."
   (interactive "P")
@@ -872,7 +860,7 @@ output filter."
 
 (defun ink-filter-output-line (line)
   "Filter single line of text from Inklecate's output.
-The filter is active only on starting play. It outputs all
+The filter is active only on starting play.  It outputs all
 errors, warnings and infos appearing in LINE, and discards the
 rest."
   (let ((result ""))
@@ -896,8 +884,6 @@ directly at a knot... OUTPUT is the output to be filtered."
       (setq output (mapconcat #'ink-filter-output-line (split-string output "\n") "")))
   output)
 
-(add-hook 'comint-preoutput-filter-functions #'ink-comint-filter-output)
-
 
 ;;; Error checking with flymake
 
@@ -906,8 +892,10 @@ directly at a knot... OUTPUT is the output to be filtered."
 (defun ink-flymake (report-fn &rest _args)
   "Ink backend for Flymake.
 Creates temporary files and passes their names as arguments to
-`ink-inklecate-path' (which see). The output of this command is
-analyzed for error and warning messages."
+`ink-inklecate-path' (which see).  The output of this command is analyzed
+for error and warning messages.
+
+REPORT-FN - Flymake reporting funciton."
   (unless (executable-find ink-inklecate-path)
     (error "Cannot find a suitable checker"))
   ;; If a live process launched in an earlier check was found, that
@@ -1057,21 +1045,21 @@ stitch."
           (setq title-list (append title-list (reverse (split-string knot-name "\\.")))))
       title-list)))
 
-(defun ink-shifttab ()
-  "S-TAB keybinding: cycle global heading visibility by calling `ink-cycle' with argument t."
+(defun ink-cycle-global ()
+  "Cycle global heading visibility."
   (interactive)
   (ink-cycle t))
 
-(defun ink-cycle (&optional arg)
-  "Visibility cycling for Ink mode.
-If ARG is t, perform global visibility cycling. If the point is
-at a header, cycle visibility of the corresponding subtree.
-Otherwise, indent the current line or insert a tab, as
-appropriate, by calling `indent-for-tab-command'."
+(defun ink-cycle (&optional global)
+  "Cycle or indent at point.
+If GLOBAL is t, perform global visibility cycling.  If the point is at a
+header, cycle visibility of the corresponding subtree.  Otherwise,
+indent the current line or insert a tab, as appropriate, by calling
+`indent-for-tab-command'."
   (interactive "P")
   (cond
    ;; Global cycling
-   ((eq arg t)
+   ((eq global t)
     (cond
      ;; Move from overview to contents
      ((and (eq last-command this-command)
@@ -1200,6 +1188,7 @@ Completion is only provided for diverts."
 ;;; Help
 
 (defun ink-display-manual ()
+  "Display the Writing With Ink manual."
   (interactive)
   (info-display-manual "WritingWithInk"))
 
@@ -1208,9 +1197,7 @@ Completion is only provided for diverts."
 
 ;;;###autoload
 (define-derived-mode ink-mode prog-mode "Ink"
-  "Major mode for editing interactive fiction using the Ink
-  scripting language."
-  :syntax-table ink-mode-syntax-table
+  "Major mode for the Ink interactive fiction scripting language."
 
   ;; Syntax
   (setq-local comment-start "// ")
