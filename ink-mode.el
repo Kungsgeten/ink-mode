@@ -64,10 +64,7 @@
   "C-c C-c" #'ink-play
   "C-c C-p" #'ink-play-knot
   "C-c C-o" #'ink-follow-link-at-point
-  "C-c C-h" #'ink-display-manual
-  ;; Folding/indent dispatch
-  "TAB"     #'ink-cycle
-  "<backtab>" #'ink-cycle-global)
+  "C-c C-h" #'ink-display-manual)
 
 (defvar-keymap ink-mode-mouse-map
   :doc "Mouse map for clickable ink links."
@@ -1028,14 +1025,6 @@ REPORT-FN - Flymake diagnostics reporting function."
 
 ;;; Outline
 
-;; Outline functions were derived from markdown-mode.el, in turn
-;; originally derived from from org.el.
-
-(defvar-local ink-cycle-global-status 1)
-(defvar-local ink-cycle-subtree-status nil)
-
-(defalias 'ink-end-of-heading 'outline-end-of-heading)
-
 (defun ink-end-of-subtree (&optional invisible-OK)
   "Move to the end of the current subtree.
 Only visible heading lines are considered, unless INVISIBLE-OK is
@@ -1090,91 +1079,9 @@ stitch."
           (setq title-list (append title-list (reverse (split-string knot-name "\\.")))))
       title-list)))
 
-(defun ink-cycle-global ()
-  "Cycle global heading visibility."
-  (interactive)
-  (ink-cycle t))
-
-(defun ink-cycle (&optional global)
-  "Cycle or indent at point.
-If GLOBAL is t, perform global visibility cycling.  If the point is at a
-header, cycle visibility of the corresponding subtree.  Otherwise,
-indent the current line or insert a tab, as appropriate, by calling
-`indent-for-tab-command'."
-  (interactive "P")
-  (cond
-   ;; Global cycling
-   ((eq global t)
-    (cond
-     ;; Move from overview to contents
-     ((and (eq last-command this-command)
-           (eq ink-cycle-global-status 2))
-      (outline-hide-sublevels 1)
-      (message "CONTENTS")
-      (setq ink-cycle-global-status 3))
-     ;; Move from contents to all
-     ((and (eq last-command this-command)
-           (eq ink-cycle-global-status 3))
-      (outline-show-all)
-      (message "SHOW ALL")
-      (setq ink-cycle-global-status 1))
-     ;; Defaults to overview
-     (t
-      (outline-hide-body)
-      (message "OVERVIEW")
-      (setq ink-cycle-global-status 2))))
-
-   ;; At a heading: rotate between three different views
-   ((thing-at-point-looking-at ink-regex-header)
-    (outline-back-to-heading)
-    (let (eoh eol eos)
-      ;; Determine boundaries
-      (save-excursion
-        (outline-back-to-heading)
-        (save-excursion
-          (beginning-of-line 2)
-          (while (and (not (eobp)) ;; this is like `next-line'
-                      (get-char-property (1- (point)) 'invisible))
-            (beginning-of-line 2)) (setq eol (point)))
-        (ink-end-of-heading)   (setq eoh (point))
-        (ink-end-of-subtree t)
-        (skip-chars-forward " \t\n")
-        (beginning-of-line 1) ; in case this is an item
-        (setq eos (1- (point))))
-      ;; Find out what to do next and set `this-command'
-      (cond
-       ;; Nothing is hidden behind this heading
-       ((= eos eoh)
-        (message "EMPTY ENTRY")
-        (setq ink-cycle-subtree-status nil))
-       ;; Entire subtree is hidden in one line: open it
-       ((>= eol eos)
-        ;; (ink-show-entry)
-        (outline-show-entry)
-        (outline-show-children)
-        (message "CHILDREN")
-        (setq ink-cycle-subtree-status 'children))
-       ;; We just showed the children, now show everything.
-       ((and (eq last-command this-command)
-             (eq ink-cycle-subtree-status 'children))
-        (outline-show-subtree)
-        (message "SUBTREE")
-        (setq ink-cycle-subtree-status 'subtree))
-       ;; Default action: hide the subtree.
-       (t
-        (outline-hide-subtree)
-        (message "FOLDED")
-        (setq ink-cycle-subtree-status 'folded)))))
-
-   ;; Otherwise, indent as appropriate
-   (t
-    (indent-for-tab-command))))
-
 (defun ink-outline-level ()
   "Return the depth to which a statement is nested in the outline."
-  (if (> (length (match-string-no-properties 1)) 1)
-      1
-    2))
+  (if (> (length (match-string-no-properties 1)) 1) 1 2))
 
 
 ;;; Autocomplete
@@ -1264,8 +1171,6 @@ Completion is only provided for diverts."
   ;; Outline
   (setq-local outline-regexp ink-regex-header)
   (setq-local outline-level #'ink-outline-level)
-  ;; Cause use of ellipses for invisible text.
-  (add-to-invisibility-spec '(outline . t))
 
   ;; Flymake
   (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t)
