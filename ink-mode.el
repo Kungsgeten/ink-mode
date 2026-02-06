@@ -40,6 +40,7 @@
 
 (require 'comint)
 (require 'thingatpt)
+(require 'imenu)
 (require 'outline)
 (require 'subr-x)
 (require 'easymenu)
@@ -150,6 +151,11 @@ Absolute path or a program used looked up in variable `exec-path'."
   :group 'ink
   :type '(choice (const :tag "inklecate (looked up in PATH)" "inklecate")
                  (string :tag "Path or command name")))
+
+(defcustom ink-imenu-include-labels t
+  "If non-nil, include labels in the imenu index."
+  :group 'ink
+  :type 'boolean)
 
 (defun ink--inklecate-executable ()
   "Return absolute path to inklecate or nil.
@@ -1084,22 +1090,65 @@ stitch."
   (if (> (length (match-string-no-properties 1)) 1) 1 2))
 
 
+;;; Symbols
+
+(defun ink--collect-symbols ()
+  "Return parsed symbols from the current buffer.
+Each result entry is a plist with `:kind', `:name', `:position'
+and `:completion-targets' keys."
+  (let (symbols)
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (beginning-of-line)
+        (cond
+         ((looking-at ink-regex-header)
+          (when-let* ((kind (if (= (ink-outline-level) 1) 'knot 'stitch))
+                      (short-name (match-string-no-properties 3))
+                      (full-name (ink-get-knot-name)))
+            (push (list :kind kind
+                        :name full-name
+                        :position (line-beginning-position)
+                        :completion-targets (delete-dups (list short-name full-name)))
+                  symbols)))
+         ((looking-at ink-regex-label)
+          (when-let* ((label-parts (ink-get-label-name))
+                      (short-name (car label-parts))
+                      (full-name (mapconcat #'identity (reverse label-parts) ".")))
+            (push (list :kind 'label
+                        :name full-name
+                        :position (line-beginning-position)
+                        :completion-targets (delete-dups (list short-name full-name)))
+                  symbols))))
+        (forward-line 1)))
+    (nreverse symbols)))
+
+(defun ink--imenu-create-index ()
+  "Return imenu index for the current Ink buffer."
+  (let (knots stitches labels)
+    (dolist (symbol (ink--collect-symbols))
+      (let ((entry (cons (plist-get symbol :name)
+                         (plist-get symbol :position))))
+        (pcase (plist-get symbol :kind)
+          ('knot (push entry knots))
+          ('stitch (push entry stitches))
+          ('label (push entry labels)))))
+    (setq knots (nreverse knots))
+    (setq stitches (nreverse stitches))
+    (setq labels (nreverse labels))
+    (delq nil (list (and knots (cons "Knots" knots))
+                    (and stitches (cons "Stitches" stitches))
+                    (and ink-imenu-include-labels labels (cons "Labels" labels))))))
+
+
 ;;; Autocomplete
 
 (defun ink-get-headers-and-labels ()
-  "Return a list of all header and label hierarchies."
-  (let ((headers-labels (list "END" "DONE")) match)
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward ink-regex-header nil t)
-        (when (setq match (match-string-no-properties 3))
-          (push match headers-labels)
-          (push (ink-get-knot-name) headers-labels)))
-      (goto-char (point-min))
-      (while (re-search-forward ink-regex-label nil t)
-        (when (setq match (match-string-no-properties 2))
-          (push match headers-labels)
-          (push (concat (ink-get-knot-name) "." match) headers-labels))))
+  "Return divert completion targets for headers and labels."
+  (let ((headers-labels (list "END" "DONE")))
+    (dolist (symbol (ink--collect-symbols))
+      (dolist (target (plist-get symbol :completion-targets))
+        (push target headers-labels)))
     (sort (delete-dups headers-labels) #'string<)))
 
 (defun ink-completion-at-point ()
@@ -1175,6 +1224,9 @@ This command is explicit and can be used to reload bundled snippets."
   ;; Outline
   (setq-local outline-regexp ink-regex-header)
   (setq-local outline-level #'ink-outline-level)
+
+  ;; Imenu
+  (setq-local imenu-create-index-function #'ink--imenu-create-index)
 
   ;; Flymake
   (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t))
