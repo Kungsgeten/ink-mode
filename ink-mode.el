@@ -506,7 +506,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     (when follow-indentation-p (back-to-indentation))))
 
 (defun ink-count-choices ()
-  "Return number of choices or gathers in line."
+  "Return the number of choices or gather markers on the current line."
   (interactive)
   (let ((choices 0))
     (save-excursion
@@ -525,7 +525,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     (make-string (max 0 (- tab-width 1)) ? )))
 
 (defun ink-indent-choices ()
-  "Indent choices and gathers: add indentations between symbols."
+  "Indent choice and gather markers by adding spacing between symbols."
   (interactive)
   (save-excursion
     (beginning-of-line)
@@ -759,7 +759,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     indentation))
 
 (defun ink-calculate-choice-indentation (element indentation-list indentation)
-  "Get the number of columns to indent choices and gathers.
+  "Return the number of columns to indent choice and gather markers.
 This depends on previous indentation, and settings.  ELEMENT is
 the current element in the INDENTATION-LIST for the lign to
 indent.  INDENTATION is the current sum."
