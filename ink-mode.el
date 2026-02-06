@@ -1140,6 +1140,19 @@ and `:completion-targets' keys."
                     (and stitches (cons "Stitches" stitches))
                     (and ink-imenu-include-labels labels (cons "Labels" labels))))))
 
+(defun ink--current-symbol-name ()
+  "Return current Ink symbol name at point, or nil if unknown.
+When `ink-imenu-include-labels' is non-nil, labels can be returned."
+  (let ((pos (point))
+        name)
+    (dolist (symbol (ink--collect-symbols))
+      (let ((kind (plist-get symbol :kind)))
+        (when (and (<= (plist-get symbol :position) pos)
+                   (or (not (eq kind 'label))
+                       ink-imenu-include-labels))
+          (setq name (plist-get symbol :name)))))
+    name))
+
 
 ;;; Autocomplete
 
@@ -1227,6 +1240,8 @@ This command is explicit and can be used to reload bundled snippets."
 
   ;; Imenu
   (setq-local imenu-create-index-function #'ink--imenu-create-index)
+  (add-hook 'which-func-functions #'ink--current-symbol-name nil 'local)
+  (setq-local add-log-current-defun-function #'ink--current-symbol-name)
 
   ;; Flymake
   (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t))
