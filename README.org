@@ -42,6 +42,10 @@ requiring ink-mode:
 
   ;; Set indentation level
   (add-hook 'ink-mode-hook (lambda () (setq tab-width 2)))
+
+  ;; Optional: register bundled Ink snippets with YASnippet.
+  (with-eval-after-load 'yasnippet
+    (add-to-list 'yas-snippet-dirs ink-snippet-dir t))
 #+END_SRC
 
 ** License

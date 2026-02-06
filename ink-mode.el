@@ -1127,14 +1127,18 @@ Completion is only provided for diverts."
 
 ;;;###autoload
 (defun ink-load-snippets()
-  "Load snippets if yasnippet installed and `ink-snippet-dir' is set."
+  "Manually load snippets if yasnippet installed and `ink-snippet-dir' is set.
+This command is explicit and can be used to reload bundled snippets."
   (interactive)
   (when ink-snippet-dir
     (cond
      ((fboundp 'yas-load-directory)
       (yas-load-directory ink-snippet-dir))
      ((fboundp 'yas/load-directory)
-      (yas/load-directory ink-snippet-dir)))))
+      (yas/load-directory ink-snippet-dir))
+     (t
+      (user-error
+       "YASnippet is not loaded yet; Ink snippets were not loaded")))))
 
 
 ;;; Help
@@ -1173,10 +1177,7 @@ Completion is only provided for diverts."
   (setq-local outline-level #'ink-outline-level)
 
   ;; Flymake
-  (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t)
-
-  ;; Snippets
-  (ink-load-snippets))
+  (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.ink\\'" . ink-mode))
