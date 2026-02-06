@@ -40,6 +40,7 @@
 
 (require 'comint)
 (require 'thingatpt)
+(require 'imenu)
 (require 'outline)
 (require 'subr-x)
 (require 'easymenu)
@@ -150,6 +151,11 @@ Absolute path or a program used looked up in variable `exec-path'."
   :group 'ink
   :type '(choice (const :tag "inklecate (looked up in PATH)" "inklecate")
                  (string :tag "Path or command name")))
+
+(defcustom ink-imenu-include-labels t
+  "If non-nil, include labels in the imenu index."
+  :group 'ink
+  :type 'boolean)
 
 (defun ink--inklecate-executable ()
   "Return absolute path to inklecate or nil.
@@ -500,7 +506,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     (when follow-indentation-p (back-to-indentation))))
 
 (defun ink-count-choices ()
-  "Return number of choices or gathers in line."
+  "Return the number of choices or gather markers on the current line."
   (interactive)
   (let ((choices 0))
     (save-excursion
@@ -519,7 +525,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     (make-string (max 0 (- tab-width 1)) ? )))
 
 (defun ink-indent-choices ()
-  "Indent choices and gathers: add indentations between symbols."
+  "Indent choice and gather markers by adding spacing between symbols."
   (interactive)
   (save-excursion
     (beginning-of-line)
@@ -753,7 +759,7 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
     indentation))
 
 (defun ink-calculate-choice-indentation (element indentation-list indentation)
-  "Get the number of columns to indent choices and gathers.
+  "Return the number of columns to indent choice and gather markers.
 This depends on previous indentation, and settings.  ELEMENT is
 the current element in the INDENTATION-LIST for the lign to
 indent.  INDENTATION is the current sum."
@@ -968,7 +974,7 @@ directory used to run the check."
 REPORT-FN - Flymake diagnostics reporting function."
   ;; Check if the compiler is available, disable otherwise.
   (unless (ink--inklecate-executable)
-    (error "Unable to find inklescape"))
+    (error "Unable to find inklecape"))
 
   ;; Process stuck?
   (when (process-live-p ink--flymake-proc)
@@ -1084,22 +1090,78 @@ stitch."
   (if (> (length (match-string-no-properties 1)) 1) 1 2))
 
 
+;;; Symbols
+
+(defun ink--collect-symbols ()
+  "Return parsed symbols from the current buffer.
+Each result entry is a plist with `:kind', `:name', `:position'
+and `:completion-targets' keys."
+  (let (symbols)
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (beginning-of-line)
+        (cond
+         ((looking-at ink-regex-header)
+          (when-let* ((kind (if (= (ink-outline-level) 1) 'knot 'stitch))
+                      (short-name (match-string-no-properties 3))
+                      (full-name (ink-get-knot-name)))
+            (push (list :kind kind
+                        :name full-name
+                        :position (line-beginning-position)
+                        :completion-targets (delete-dups (list short-name full-name)))
+                  symbols)))
+         ((looking-at ink-regex-label)
+          (when-let* ((label-parts (ink-get-label-name))
+                      (short-name (car label-parts))
+                      (full-name (mapconcat #'identity (reverse label-parts) ".")))
+            (push (list :kind 'label
+                        :name full-name
+                        :position (line-beginning-position)
+                        :completion-targets (delete-dups (list short-name full-name)))
+                  symbols))))
+        (forward-line 1)))
+    (nreverse symbols)))
+
+(defun ink--imenu-create-index ()
+  "Return imenu index for the current Ink buffer."
+  (let (knots stitches labels)
+    (dolist (symbol (ink--collect-symbols))
+      (let ((entry (cons (plist-get symbol :name)
+                         (plist-get symbol :position))))
+        (pcase (plist-get symbol :kind)
+          ('knot (push entry knots))
+          ('stitch (push entry stitches))
+          ('label (push entry labels)))))
+    (setq knots (nreverse knots))
+    (setq stitches (nreverse stitches))
+    (setq labels (nreverse labels))
+    (delq nil (list (and knots (cons "Knots" knots))
+                    (and stitches (cons "Stitches" stitches))
+                    (and ink-imenu-include-labels labels (cons "Labels" labels))))))
+
+(defun ink--current-symbol-name ()
+  "Return current Ink symbol name at point, or nil if unknown.
+When `ink-imenu-include-labels' is non-nil, labels can be returned."
+  (let ((pos (point))
+        name)
+    (dolist (symbol (ink--collect-symbols))
+      (let ((kind (plist-get symbol :kind)))
+        (when (and (<= (plist-get symbol :position) pos)
+                   (or (not (eq kind 'label))
+                       ink-imenu-include-labels))
+          (setq name (plist-get symbol :name)))))
+    name))
+
+
 ;;; Autocomplete
 
 (defun ink-get-headers-and-labels ()
-  "Return a list of all header and label hierarchies."
-  (let ((headers-labels (list "END" "DONE")) match)
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward ink-regex-header nil t)
-        (when (setq match (match-string-no-properties 3))
-          (push match headers-labels)
-          (push (ink-get-knot-name) headers-labels)))
-      (goto-char (point-min))
-      (while (re-search-forward ink-regex-label nil t)
-        (when (setq match (match-string-no-properties 2))
-          (push match headers-labels)
-          (push (concat (ink-get-knot-name) "." match) headers-labels))))
+  "Return divert completion targets for headers and labels."
+  (let ((headers-labels (list "END" "DONE")))
+    (dolist (symbol (ink--collect-symbols))
+      (dolist (target (plist-get symbol :completion-targets))
+        (push target headers-labels)))
     (sort (delete-dups headers-labels) #'string<)))
 
 (defun ink-completion-at-point ()
@@ -1127,14 +1189,18 @@ Completion is only provided for diverts."
 
 ;;;###autoload
 (defun ink-load-snippets()
-  "Load snippets if yasnippet installed and `ink-snippet-dir' is set."
+  "Manually load snippets if yasnippet installed and `ink-snippet-dir' is set.
+This command is explicit and can be used to reload bundled snippets."
   (interactive)
   (when ink-snippet-dir
     (cond
      ((fboundp 'yas-load-directory)
       (yas-load-directory ink-snippet-dir))
      ((fboundp 'yas/load-directory)
-      (yas/load-directory ink-snippet-dir)))))
+      (yas/load-directory ink-snippet-dir))
+     (t
+      (user-error
+       "YASnippet is not loaded yet; Ink snippets were not loaded")))))
 
 
 ;;; Help
@@ -1157,7 +1223,7 @@ Completion is only provided for diverts."
   (setq-local comment-use-syntax t)
   (setq-local comment-end "")
   (setq-local comment-auto-fill-only-comments t)
-  (setq font-lock-defaults '(ink-font-lock-keywords))
+  (setq-local font-lock-defaults '(ink-font-lock-keywords))
 
   ;; Indent
   (setq-local paragraph-ignore-fill-prefix t)
@@ -1172,11 +1238,13 @@ Completion is only provided for diverts."
   (setq-local outline-regexp ink-regex-header)
   (setq-local outline-level #'ink-outline-level)
 
-  ;; Flymake
-  (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t)
+  ;; Imenu
+  (setq-local imenu-create-index-function #'ink--imenu-create-index)
+  (add-hook 'which-func-functions #'ink--current-symbol-name nil 'local)
+  (setq-local add-log-current-defun-function #'ink--current-symbol-name)
 
-  ;; Snippets
-  (ink-load-snippets))
+  ;; Flymake
+  (add-hook 'flymake-diagnostic-functions 'ink-flymake-inklecate nil t))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.ink\\'" . ink-mode))
