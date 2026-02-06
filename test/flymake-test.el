@@ -1,4 +1,6 @@
 ;;; flymake-test.el --- tests for the ink-mode Flymake backend  -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'ink-mode)
 
 (ert-deftest ink-flymake-parse-error-line ()
   (should (equal

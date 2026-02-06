@@ -968,7 +968,7 @@ directory used to run the check."
 REPORT-FN - Flymake diagnostics reporting function."
   ;; Check if the compiler is available, disable otherwise.
   (unless (ink--inklecate-executable)
-    (error "Unable to find inklescape"))
+    (error "Unable to find inklecape"))
 
   ;; Process stuck?
   (when (process-live-p ink--flymake-proc)
@@ -1157,7 +1157,7 @@ Completion is only provided for diverts."
   (setq-local comment-use-syntax t)
   (setq-local comment-end "")
   (setq-local comment-auto-fill-only-comments t)
-  (setq font-lock-defaults '(ink-font-lock-keywords))
+  (setq-local font-lock-defaults '(ink-font-lock-keywords))
 
   ;; Indent
   (setq-local paragraph-ignore-fill-prefix t)
