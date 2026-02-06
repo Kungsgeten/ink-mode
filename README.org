@@ -9,8 +9,8 @@ language for writing interactive fiction developed by [[https://www.inklestudios
 - automatic indentation
 - autocomplete divert links with =completion-at-point= (=M-<TAB>= or
   =C-M-i=)
-- jump to link inside an Ink file by clicking it or =C-c C-o= (links
-  between Ink files are not supported)
+- jump to divert links inside an Ink file by clicking or =C-c C-o=
+- open =INCLUDE= file links with =C-c C-o=
 - command to playtest the game from Emacs: =C-c C-c=
   - start the game at a given knot or stitch with =C-c C-p=
 - outline: fold knots and stitches as in org-mode, with =<TAB>= and
@@ -35,7 +35,7 @@ requiring ink-mode:
 #+BEGIN_SRC emacs-lisp
   ;; Path to the Inklecate binary, used to playtest
   ;; and to check for errors
-  (setq ink-inklecate-path "/usr/bin/inklecate")
+  (setq ink-inklecate-command "/usr/bin/inklecate")
 
   ;; Enable flymake (error reporting)
   (add-hook 'ink-mode-hook 'flymake-mode)
@@ -43,9 +43,9 @@ requiring ink-mode:
   ;; Set indentation level
   (add-hook 'ink-mode-hook (lambda () (setq tab-width 2)))
 
-  ;; Optional: register bundled Ink snippets with YASnippet.
+  ;; Optional: load bundled Ink snippets with YASnippet.
   (with-eval-after-load 'yasnippet
-    (add-to-list 'yas-snippet-dirs ink-snippet-dir t))
+    (ink-load-snippets))
 #+END_SRC
 
 ** License
