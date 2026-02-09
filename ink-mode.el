@@ -594,8 +594,11 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
                    (looking-at "^\\s-*//")
                    (looking-at "^\\s-*TODO")))
         (forward-line 1)
-        (re-search-forward "^\\s-*[^[:space:]]+.*$")
-        (beginning-of-line))
+        (if (re-search-forward "^\\s-*[^[:space:]]+.*$" nil t)
+            ;; Stay on the matched line; match may include trailing newline.
+            (goto-char (match-beginning 0))
+          ;; Reached EOF with only comments/whitespace.
+          (setq indented t)))
 
       (setq start-pos (point))
 
@@ -621,12 +624,18 @@ Otherwise, use the setting of `indent-tabs-mode', which may give:
             ;; line.
             (goto-char comment-end)
             (forward-line 1)
-            (while (or (looking-at "^\\s-*$")
-                       (looking-at "^\\s-*//")
-                       (looking-at "^\\s-*TODO"))
-              (forward-line 1)
-              (re-search-forward "^\\s-*[^[:space:]]+.*$")
-              (beginning-of-line))
+            (let ((found-next-line t))
+              (while (and found-next-line
+                          (or (looking-at "^\\s-*$")
+                              (looking-at "^\\s-*//")
+                              (looking-at "^\\s-*TODO")))
+                (forward-line 1)
+                (if (re-search-forward "^\\s-*[^[:space:]]+.*$" nil t)
+                    ;; Same as above: keep point on the matched line.
+                    (goto-char (match-beginning 0))
+                  (setq found-next-line nil)
+                  ;; Stop scanning when the comment tail reaches EOF.
+                  (goto-char (point-max)))))
             (setq start-pos (point)))))
 
       ;; Go back to header or buffer start
@@ -967,66 +976,80 @@ directory used to run the check."
     diags))
 
 (defvar-local ink--flymake-proc nil)
+(defvar-local ink--flymake-missing-compiler-warned nil)
 
 ;;; TODO: Also report errors in INCLUDE'd files.
 (defun ink-flymake-inklecate (report-fn &rest _args)
   "Flymake backend for Ink using inklecate.
 REPORT-FN - Flymake diagnostics reporting function."
-  ;; Check if the compiler is available, disable otherwise.
-  (unless (ink--inklecate-executable)
-    (error "Unable to find inklecape"))
-
-  ;; Process stuck?
-  (when (process-live-p ink--flymake-proc)
-    (kill-process ink--flymake-proc))
-
   (let* ((source (current-buffer))
-         (source-file (buffer-file-name source))
-         (default-dir (file-name-directory source-file))
+         (executable (ink--inklecate-executable))
+         (source-file (buffer-file-name source)))
+    (cond
+     ;; Missing compiler: fail soft.
+     ((not executable)
+      (unless ink--flymake-missing-compiler-warned
+        (warn "ink-mode Flymake disabled: cannot find `%s'; set `ink-inklecate-command'."
+              ink-inklecate-command)
+        (setq ink--flymake-missing-compiler-warned t))
+      (funcall report-fn nil))
 
-         ;; Tmp source file in same dir so INCLUDE relative paths
-         ;; work.
-         (temp-ink (make-temp-file
-                    (expand-file-name
-                     (concat (file-name-base source-file) "-flymake-")
-                     default-dir)
-                    nil ".ink"))
+     ;; Unsaved buffers: no stable base path for INCLUDE resolution.
+     ((not source-file)
+      (funcall report-fn nil))
 
-         ;; Dump stdout somewhere.
-         (cmd (append (list (ink--inklecate-executable)
-                            "-o" (or null-device (make-temp-name "NUL")))
-                      (list temp-ink))))
+     (t
+      ;; Compiler is back; allow future warnings if it disappears.
+      (setq ink--flymake-missing-compiler-warned nil)
 
-    ;; Write to a temporary file.
-    (save-restriction
-      (widen)
-      (write-region (point-min) (point-max) temp-ink nil 'silent))
+      ;; Process stuck?
+      (when (process-live-p ink--flymake-proc)
+        (kill-process ink--flymake-proc))
 
-    ;; Launch the process.
-    (setq ink--flymake-proc
-          (make-process
-           :name "ink-flymake"
-           :noquery t
-           :buffer (generate-new-buffer " *ink-flymake*")
-           :command cmd
-           :sentinel
-           (lambda (proc _event)
-             (when (memq (process-status proc) '(exit signal))
-               (unwind-protect
-                   (when (and (buffer-live-p source)
-                              (eq proc ink--flymake-proc))
-                     ;; buffer string -> parse -> diags -> report.
-                     (funcall
-                      report-fn
-                      (thread-first
-                        (with-current-buffer (process-buffer proc)
-                          (buffer-string))
-                        (ink--flymake-parse-output)
-                        (ink--flymake-items-to-diagnostics
-                         source temp-ink default-dir))))
-                 ;; Cleanup on exit/failure.
-                 (ignore-errors (delete-file temp-ink))
-                 (kill-buffer (process-buffer proc)))))))))
+      (let* ((default-dir (file-name-directory source-file))
+             ;; Tmp source file in same dir so INCLUDE relative paths
+             ;; work.
+             (temp-ink (make-temp-file
+                        (expand-file-name
+                         (concat (file-name-base source-file) "-flymake-")
+                         default-dir)
+                        nil ".ink"))
+
+             ;; Dump stdout somewhere.
+             (cmd (append (list executable
+                                "-o" (or null-device (make-temp-name "NUL")))
+                          (list temp-ink))))
+
+        ;; Write to a temporary file.
+        (save-restriction
+          (widen)
+          (write-region (point-min) (point-max) temp-ink nil 'silent))
+
+        ;; Launch the process.
+        (setq ink--flymake-proc
+              (make-process
+               :name "ink-flymake"
+               :noquery t
+               :buffer (generate-new-buffer " *ink-flymake*")
+               :command cmd
+               :sentinel
+               (lambda (proc _event)
+                 (when (memq (process-status proc) '(exit signal))
+                   (unwind-protect
+                       (when (and (buffer-live-p source)
+                                  (eq proc ink--flymake-proc))
+                         ;; buffer string -> parse -> diags -> report.
+                         (funcall
+                          report-fn
+                          (thread-first
+                            (with-current-buffer (process-buffer proc)
+                              (buffer-string))
+                            (ink--flymake-parse-output)
+                            (ink--flymake-items-to-diagnostics
+                             source temp-ink default-dir))))
+                     ;; Cleanup on exit/failure.
+                     (ignore-errors (delete-file temp-ink))
+                     (kill-buffer (process-buffer proc))))))))))))
 
 
 ;;; Outline

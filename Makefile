@@ -1,7 +1,7 @@
 EASK ?= eask
 ELISP_FILES = ink-mode.el
 
-.PHONY: deps lint package-lint checkdoc compile test
+.PHONY: deps lint package-lint checkdoc compile test clean
 
 lint: checkdoc compile package-lint
 
@@ -19,3 +19,6 @@ compile:
 
 test:
 	$(EASK) test ert-runner
+
+clean:
+	rm -f *.elc test/*.elc

@@ -12,13 +12,6 @@
 * (end_choice) End choice
 ")
 
-(defun ink-test--line-position (line)
-  "Return beginning position of LINE in current buffer."
-  (save-excursion
-    (goto-char (point-min))
-    (should (search-forward line nil t))
-    (line-beginning-position)))
-
 (ert-deftest ink-collect-symbols-parses-headers-and-labels ()
   (with-temp-buffer
     (insert ink-test--sample-buffer)
